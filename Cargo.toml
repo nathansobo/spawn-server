@@ -1,0 +1,11 @@
+[package]
+name = "spawn-server"
+version = "0.1.0"
+authors = ["Nathan Sobo <nathan@github.com>"]
+
+[dependencies]
+bytes = "0.4"
+futures = "0.1"
+tokio-io = "0.1"
+tokio-core = "0.1"
+tokio-process = "0.1"
