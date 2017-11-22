@@ -9,13 +9,13 @@ extern crate tokio_process;
 extern crate serde;
 extern crate serde_json;
 
-use std::error::Error;
 use std::process::{Command, ExitStatus, Stdio};
+use std::fmt::Debug;
 use std::io;
 
 use bytes::BytesMut;
-use futures::{Future, Sink, Stream};
-use futures::unsync::mpsc::unbounded;
+use futures::{Async, Future, Poll, Sink};
+use futures::stream::{FuturesUnordered, Stream, StreamFuture};
 use tokio_core::net::TcpListener;
 use tokio_core::reactor::Core;
 use tokio_io::AsyncRead;
@@ -82,6 +82,7 @@ struct SpawnRequest {
     args: Vec<String>
 }
 
+#[derive(Debug)]
 enum SpawnResponse {
     ChildOutput {
         source: OutputStreamType,
@@ -92,7 +93,7 @@ enum SpawnResponse {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum OutputStreamType {
     Stdout,
     Stderr
@@ -146,49 +147,92 @@ fn main() {
     let mut core = Core::new().unwrap();
     let handle = core.handle();
 
-    // Create a TCP listener on the event loop. Later we'll use a domain socket / named pipe.
     let address = "0.0.0.0:12345".parse().unwrap();
     let listener = TcpListener::bind(&address, &handle).unwrap();
 
-    // Handle a stream of incoming connections.
     let handle_connections = listener.incoming().for_each(move |(tcp_stream, _)| {
-        println!("HANDLE CONNECTION");
+        let (responses_sink, requests_stream) = tcp_stream.framed(SpawnCodec).split();
 
-        let (writer, reader) = tcp_stream.framed(SpawnCodec).split();
-
-        let (tx, rx) = unbounded::<SpawnResponse>();
-
-        let handle_clone = handle.clone();
-        let respond = reader.for_each(move |request| {
-            println!("REQUEST");
-
+        let handle_for_request = handle.clone();
+        let responses = MergeResponseStreams::new(requests_stream.map(move |request| {
             let mut child = Command::new("sh")
                 .arg("-c")
                 .arg("echo hello")
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
-                .spawn_async(&handle_clone)
+                .spawn_async(&handle_for_request)
                 .expect("Failed to execute sh");
 
             let stdout = FramedRead::new(child.stdout().take().unwrap(), ChildOutputStreamDecoder::from_stdout());
             let stderr = FramedRead::new(child.stderr().take().unwrap(), ChildOutputStreamDecoder::from_stderr());
             let exit = child.map(|status| SpawnResponse::ChildExit { status }).into_stream();
-            let child_results = stdout.select(stderr).chain(exit);
+            stdout.select(stderr).chain(exit)
+        }));
 
-            let send = tx.clone()
-                .send_all(child_results.map_err(|_| unreachable!()))
-                .then(|_| Ok(()));
-
-            &handle_clone.spawn(send);
-            Ok(())
-        });
-
-        handle.spawn(writer.send_all(rx.map_err(|_| io::Error::new(io::ErrorKind::Other, "Problem"))).then(|_| Ok(())));
-
-        handle.spawn(respond.then(|_| Ok(())));
+        handle.spawn(responses_sink.send_all(responses).then(|_| Ok(())));
         Ok(())
     });
 
     // Handle incoming connections on the event loop.
     core.run(handle_connections).unwrap();
+}
+
+struct MergeResponseStreams<S>
+    where S: Stream, S::Item: Stream
+{
+    parent_stream: S,
+    child_stream_futures: FuturesUnordered<StreamFuture<S::Item>>
+}
+
+impl<S> MergeResponseStreams<S>
+    where S: Stream, <S as Stream>::Item: Stream
+{
+    fn new(parent_stream: S) -> Self {
+        Self {
+            parent_stream,
+            child_stream_futures: FuturesUnordered::new()
+        }
+    }
+}
+
+impl<S> Stream for MergeResponseStreams<S>
+    where
+        S: Stream, S::Item: Stream,
+        <S::Item as Stream>::Error: Debug,
+        <S::Item as Stream>::Item: Debug
+{
+    type Item = <S::Item as Stream>::Item;
+    type Error = S::Error;
+
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        match self.parent_stream.poll()? {
+            Async::NotReady => {
+                if self.child_stream_futures.is_empty() {
+                    return Ok(Async::NotReady);
+                }
+            }
+            Async::Ready(Some(child_stream)) => {
+                self.child_stream_futures.push(child_stream.into_future())
+            }
+            Async::Ready(None) => {
+                if self.child_stream_futures.is_empty() {
+                    return Ok(Async::Ready(None));
+                }
+            }
+        }
+
+        match self.child_stream_futures
+            .poll()
+            .map_err(|(err, _)| err)
+            .expect("Child streams should not produce errors")
+        {
+            Async::Ready(Some((Some(response), child_stream))) => {
+                self.child_stream_futures.push(child_stream.into_future());
+                Ok(Async::Ready(Some(response)))
+            }
+            _ => {
+                Ok(Async::NotReady)
+            }
+        }
+    }
 }
