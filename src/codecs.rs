@@ -12,6 +12,7 @@ use tokio_io::codec::{Decoder, Encoder};
 
 #[derive(Debug, Deserialize)]
 pub struct SpawnRequest {
+    pub id: u64,
     pub path: String,
     pub args: Vec<String>,
     pub cwd: String,
@@ -21,10 +22,12 @@ pub struct SpawnRequest {
 #[derive(Debug)]
 pub enum SpawnResponse {
     ChildOutput {
+        request_id: u64,
         source: OutputStreamType,
         data: BytesMut
     },
     ChildExit {
+        request_id: u64,
         status: ExitStatus
     }
 }
@@ -69,7 +72,8 @@ impl Encoder for SpawnCodec {
 
     fn encode(&mut self, msg: Self::Item, buf: &mut BytesMut) -> io::Result<()> {
         match msg {
-            SpawnResponse::ChildOutput { source, data } => {
+            SpawnResponse::ChildOutput { request_id, source, data } => {
+                buf.put_u64::<BigEndian>(request_id);
                 match source {
                     OutputStreamType::Stdout => buf.put_u8(1 << 0),
                     OutputStreamType::Stderr => buf.put_u8(1 << 1),
@@ -77,7 +81,8 @@ impl Encoder for SpawnCodec {
                 buf.put_u64::<BigEndian>(data.len() as u64);
                 buf.extend(data);
             },
-            SpawnResponse::ChildExit { status } => {
+            SpawnResponse::ChildExit { request_id, status } => {
+                buf.put_u64::<BigEndian>(request_id);
                 buf.put_u8(0);
                 buf.put_i32::<BigEndian>(status.code().unwrap());
             }
@@ -88,18 +93,21 @@ impl Encoder for SpawnCodec {
 }
 
 pub struct ChildOutputStreamDecoder {
+    request_id: u64,
     source: OutputStreamType
 }
 
 impl ChildOutputStreamDecoder {
-    pub fn from_stdout() -> Self {
+    pub fn from_stdout(request_id: u64) -> Self {
         Self {
+            request_id,
             source: OutputStreamType::Stdout
         }
     }
 
-    pub fn from_stderr() -> Self {
+    pub fn from_stderr(request_id: u64) -> Self {
         Self {
+            request_id,
             source: OutputStreamType::Stderr
         }
     }
@@ -112,6 +120,7 @@ impl Decoder for ChildOutputStreamDecoder {
     fn decode(&mut self, buf: &mut BytesMut) -> io::Result<Option<SpawnResponse>> {
         if buf.len() > 0 {
             Ok(Some(SpawnResponse::ChildOutput {
+                request_id: self.request_id,
                 source: self.source,
                 data: buf.take()
             }))

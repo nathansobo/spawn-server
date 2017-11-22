@@ -13,6 +13,8 @@ pub fn handle_spawn_requests<'a, S>(requests: S, handle: Handle) -> Box<'a + Str
     where S: 'a + Stream<Item=SpawnRequest>,
 {
     Box::new(MergeResponseStreams::new(requests.map(move |request| {
+        let request_id = request.id;
+
         let mut child = Command::new(request.path)
             .args(request.args)
             .current_dir(request.cwd)
@@ -22,9 +24,9 @@ pub fn handle_spawn_requests<'a, S>(requests: S, handle: Handle) -> Box<'a + Str
             .spawn_async(&handle)
             .expect("Failed to execute sh");
 
-        let stdout = FramedRead::new(child.stdout().take().unwrap(), ChildOutputStreamDecoder::from_stdout());
-        let stderr = FramedRead::new(child.stderr().take().unwrap(), ChildOutputStreamDecoder::from_stderr());
-        let exit = child.map(|status| SpawnResponse::ChildExit { status }).into_stream();
+        let stdout = FramedRead::new(child.stdout().take().unwrap(), ChildOutputStreamDecoder::from_stdout(request_id));
+        let stderr = FramedRead::new(child.stderr().take().unwrap(), ChildOutputStreamDecoder::from_stderr(request_id));
+        let exit = child.map(move |status| SpawnResponse::ChildExit { request_id, status }).into_stream();
         stdout.select(stderr).chain(exit)
     })))
 }
