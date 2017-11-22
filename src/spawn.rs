@@ -12,10 +12,11 @@ use codecs::*;
 pub fn handle_spawn_requests<'a, S>(requests: S, handle: Handle) -> Box<'a + Stream<Item=SpawnResponse, Error=S::Error>>
     where S: 'a + Stream<Item=SpawnRequest>,
 {
-    Box::new(MergeResponseStreams::new(requests.map(move |_request| {
-        let mut child = Command::new("sh")
-            .arg("-c")
-            .arg("echo hello")
+    Box::new(MergeResponseStreams::new(requests.map(move |request| {
+        let mut child = Command::new(request.path)
+            .args(request.args)
+            .current_dir(request.cwd)
+            .envs(request.env)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn_async(&handle)

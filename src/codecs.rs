@@ -1,16 +1,21 @@
 extern crate serde;
 extern crate serde_json;
 
+use std::collections::HashMap;
+use std::error::Error;
 use std::io;
 use std::process::ExitStatus;
 
-use bytes::BytesMut;
+use bytes::{BytesMut, BigEndian};
+use bytes::buf::BufMut;
 use tokio_io::codec::{Decoder, Encoder};
 
 #[derive(Debug, Deserialize)]
 pub struct SpawnRequest {
-    path: String,
-    args: Vec<String>
+    pub path: String,
+    pub args: Vec<String>,
+    pub cwd: String,
+    pub env: HashMap<String, String>
 }
 
 #[derive(Debug)]
@@ -30,15 +35,6 @@ pub enum OutputStreamType {
     Stderr
 }
 
-impl ToString for OutputStreamType {
-    fn to_string(&self) -> String {
-        match *self {
-            OutputStreamType::Stdout => String::from("stdout"),
-            OutputStreamType::Stderr => String::from("stderr")
-        }
-    }
-}
-
 pub struct SpawnCodec;
 
 impl Decoder for SpawnCodec {
@@ -53,17 +49,14 @@ impl Decoder for SpawnCodec {
         match serde_json::from_slice(buf.as_ref()) {
             Ok(result) => {
                 buf.take();
-                println!("PARSED");
                 Ok(Some(result))
             },
             Err(error) => {
                 buf.take();
-                println!("PARSE ERROR");
                 if error.is_eof() {
                     Ok(None)
                 } else {
-                    Ok(Some(SpawnRequest {path: String::from(""), args: vec![]}))
-                    // Err(io::Error::new(io::ErrorKind::InvalidInput, error.description()))
+                    Err(io::Error::new(io::ErrorKind::InvalidInput, error.description()))
                 }
             }
         }
@@ -77,15 +70,16 @@ impl Encoder for SpawnCodec {
     fn encode(&mut self, msg: Self::Item, buf: &mut BytesMut) -> io::Result<()> {
         match msg {
             SpawnResponse::ChildOutput { source, data } => {
-                buf.extend(source.to_string().as_bytes());
-                buf.extend(b": ");
+                match source {
+                    OutputStreamType::Stdout => buf.put_u8(1 << 0),
+                    OutputStreamType::Stderr => buf.put_u8(1 << 1),
+                }
+                buf.put_u64::<BigEndian>(data.len() as u64);
                 buf.extend(data);
-                buf.extend(b"\n")
             },
             SpawnResponse::ChildExit { status } => {
-                buf.extend(b"exit: ");
-                buf.extend(status.code().unwrap().to_string().as_bytes());
-                buf.extend(b"\n");
+                buf.put_u8(0);
+                buf.put_i32::<BigEndian>(status.code().unwrap());
             }
         }
 
