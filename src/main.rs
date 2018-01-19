@@ -23,7 +23,7 @@ fn main() {
     let mut core = Core::new().unwrap();
     let handle = core.handle();
 
-    let address = "0.0.0.0:12345".parse().unwrap();
+    let address = "127.0.0.1:12345".parse().unwrap();
     let listener = TcpListener::bind(&address, &handle).unwrap();
 
     let handle_connections = listener.incoming().for_each(move |(tcp_stream, _)| {
