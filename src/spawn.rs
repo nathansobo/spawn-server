@@ -9,8 +9,8 @@ use tokio_process::CommandExt;
 
 use codecs::*;
 
-pub fn handle_spawn_requests<'a, S>(requests: S, handle: Handle) -> Box<'a + Stream<Item=SpawnResponse, Error=S::Error>>
-    where S: 'a + Stream<Item=SpawnRequest>,
+pub fn handle_spawn_requests<S>(requests: S, handle: Handle) -> Box<Stream<Item=SpawnResponse, Error=S::Error>>
+    where S: 'static + Stream<Item=SpawnRequest>,
 {
     Box::new(MergeResponseStreams::new(requests.map(move |request| {
         let request_id = request.id;

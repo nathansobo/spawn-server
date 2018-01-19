@@ -10,8 +10,7 @@ extern crate tokio_process;
 mod codecs;
 mod spawn;
 
-use futures::{Future, Sink};
-use futures::stream::Stream;
+use futures::{Future, Stream, Sink};
 use tokio_core::net::TcpListener;
 use tokio_core::reactor::Core;
 use tokio_io::AsyncRead;
