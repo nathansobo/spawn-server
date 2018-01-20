@@ -1,2 +1,4 @@
-/target/
+.DS_Store
+/server/target/
 **/*.rs.bk
+node_modules

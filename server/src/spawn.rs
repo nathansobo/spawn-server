@@ -15,6 +15,8 @@ pub fn handle_spawn_requests<S>(requests: S, handle: Handle) -> Box<Stream<Item=
     Box::new(MergeResponseStreams::new(requests.map(move |request| {
         let request_id = request.id;
 
+        eprintln!("Going to run {}", request.path);
+
         let mut child = Command::new(request.path)
             .args(request.args)
             .current_dir(request.cwd)
